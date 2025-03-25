@@ -1,52 +1,50 @@
-import os
-from pprint import pprint
-from configs.config import parser
-from dataset.data_module import DataModule
-from lightning_tools.callbacks import add_callbacks
-from models.R2GenGPT import R2GenGPT
-from lightning.pytorch import seed_everything
+# train_multilabel.py
+import argparse
 import lightning.pytorch as pl
+from model_multilabel import MultiLabelClassifier
+from data_module.data_module_multilabel import MultiLabelDataModule
 
- 
-def train(args):
-    dm = DataModule(args)
-    callbacks = add_callbacks(args)
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--annotation', type=str, required=True)
+    parser.add_argument('--base_dir', type=str, required=True)
+    parser.add_argument('--vision_model', type=str, default='microsoft/swin-base-patch4-window7-224')
+    parser.add_argument('--freeze_vm', default=False, type=lambda x: (str(x).lower()=='true'))
 
-    trainer = pl.Trainer(
-        # devices=args.devices,
-        devices=1,
-        num_nodes=args.num_nodes,
-        strategy=args.strategy,
-        accelerator=args.accelerator,
-        precision=args.precision,
-        val_check_interval = args.val_check_interval,
-        limit_val_batches = args.limit_val_batches,
-        max_epochs = args.max_epochs,
-        num_sanity_val_steps = args.num_sanity_val_steps,
-        accumulate_grad_batches=args.accumulate_grad_batches,
-        callbacks=callbacks["callbacks"], 
-        logger=callbacks["loggers"]
-    )
-
-    if args.ckpt_file is not None:
-        model = R2GenGPT.load_from_checkpoint(args.ckpt_file, strict=False)
-    else:
-        model = R2GenGPT(args)
-
-    if args.test:
-        trainer.test(model, datamodule=dm)
-    elif args.validate:
-        trainer.validate(model, datamodule=dm)
-    else:
-        trainer.fit(model, datamodule=dm)
+    # 训练超参数
+    parser.add_argument('--batch_size', type=int, default=8)
+    parser.add_argument('--val_batch_size', type=int, default=16)
+    parser.add_argument('--test_batch_size', type=int, default=16)
+    parser.add_argument('--num_workers', type=int, default=2)
+    parser.add_argument('--max_epochs', type=int, default=5)
+    parser.add_argument('--learning_rate', type=float, default=1e-4)
+    # 其它Lightning参数
+    parser.add_argument('--accelerator', type=str, default='gpu')
+    parser.add_argument('--devices', type=int, default=1)
+    parser.add_argument('--precision', type=str, default='bf16-mixed')
+    # ...
+    args = parser.parse_args()
+    return args
 
 def main():
-    args = parser.parse_args()
-    os.makedirs(args.savedmodel_path, exist_ok=True)
-    pprint(vars(args))
-    seed_everything(42, workers=True)
-    train(args)
+    args = parse_args()
 
+    dm = MultiLabelDataModule(args)
+    dm.setup()
 
-if __name__ == '__main__':
+    model = MultiLabelClassifier(args)
+
+    trainer = pl.Trainer(
+        accelerator=args.accelerator,
+        devices=args.devices,
+        max_epochs=args.max_epochs,
+        precision=args.precision,
+    )
+
+    # 训练
+    trainer.fit(model, datamodule=dm)
+    # 测试
+    trainer.test(model, datamodule=dm)
+
+if __name__ == "__main__":
     main()

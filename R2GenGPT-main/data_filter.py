@@ -8,10 +8,10 @@ with open(json_file_path, "r") as file:
 # 只保留每个 split（train, test, valid）中的前 10 条数据
 for split in ["train", "test", "val"]:
     if split in data:
-        data[split] = data[split][:10]  # 截取前 10 条
+        data[split] = data[split][:11]  # 截取前 10 条
 
 # 保存新的 JSON 文件
-filtered_json_path = "/root/autodl-tmp/mimic_cxr_mini/p10_annotation_filtered_Final.json"
+filtered_json_path = "/root/autodl-tmp/mimic_cxr_mini/p10_annotation_filtered_Final_1.json"
 with open(filtered_json_path, "w") as file:
     json.dump(data, file, indent=4, ensure_ascii=False)
 

@@ -5,10 +5,11 @@ import numpy as np
 # 文件路径
 csv_file_path = "/root/autodl-tmp/mimic-cxr-2.0.0-chexpert.csv"
 json_file_path = "/root/autodl-tmp/mimic_cxr_mini/p10_annotation.json"
-updated_json_path = "/root/autodl-tmp/mimic_cxr_mini/p10_annotation_updated_2.json"
+updated_json_path = "/root/autodl-tmp/mimic_cxr_mini/p10_annotation_final.json"
 
-# 读取 CSV 文件，并将 NaN 替换为 None（对应 JSON 中的 null）
-csv_data = pd.read_csv(csv_file_path).replace({np.nan: None})
+# 读取 CSV 文件，并将 NaN 替换为 None（对应 JSON 中的 null），同时将 -1.0 替换为 None
+csv_data = pd.read_csv(csv_file_path)
+csv_data.replace({np.nan: None, -1.0: None}, inplace=True)
 
 # 读取 JSON 文件
 with open(json_file_path, "r") as json_file:
