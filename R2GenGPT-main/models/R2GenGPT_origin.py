@@ -28,13 +28,13 @@ class R2GenGPT(pl.LightningModule):
         self.visual_encoder = SwinModel.from_pretrained(args.vision_model)
         if args.vis_use_lora:
             peft_config_visual = LoraConfig(
-                                    r=args.vis_r,
-                                    lora_alpha=args.vis_alpha,
-                                    target_modules=["query", "value"],
-                                    lora_dropout=args.lora_dropout,
-                                    bias="none",
-                                    modules_to_save=["classifier"],
-                                )
+                r=args.vis_r,
+                lora_alpha=args.vis_alpha,
+                target_modules=["query", "value"],
+                lora_dropout=args.lora_dropout,
+                bias="none",
+                modules_to_save=["classifier"],
+            )
             self.visual_encoder = get_peft_model(self.visual_encoder, peft_config_visual)
             self.visual_encoder.print_trainable_parameters()
             print('Loading vision encoder with LoRA -- Done')
@@ -80,7 +80,7 @@ class R2GenGPT(pl.LightningModule):
         self.layer_norm = nn.LayerNorm(self.llama_model.config.hidden_size)
         self.end_sym = args.end_sym
         # self.prompt = 'Generate a comprehensive and detailed diagnosis report for this chest xray image.'
-        self.prompt = 'Please classify this chest X-ray image by identifying which of the 14 diseases in the MIMIC-CXR dataset it corresponds to.'
+        self.prompt = 'This is a 14-class classification task related to medical imaging, where the 14 disease categories are as follows: Atelectasis,Cardiomegaly,Consolidation,Edema,Enlarged Cardiomediastinum,Fracture,Lung Lesion,Lung Opacity,No Finding,Pleural Effusion,Pleural Other,Pneumonia,Pneumothorax,Support Devices. Please output \"Positive\" or \"Negative\" for each category.'
         self.val_step_outputs = []
         self.test_step_outputs = []
         self.val_score = 0.0

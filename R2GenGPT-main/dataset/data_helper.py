@@ -14,12 +14,12 @@ class FieldParser:
         self.vit_feature_extractor = AutoImageProcessor.from_pretrained(args.vision_model)
 
     def _parse_image(self, img):
-        """将图像转换为张量"""
+        """Convert image to tensor"""
         pixel_values = self.vit_feature_extractor(img, return_tensors="pt").pixel_values
         return pixel_values[0]
 
     def clean_report(self, report):
-        """清洗医学报告文本"""
+        """Clean medical report text"""
         if self.dataset == "iu_xray":
             report_cleaner = lambda t: t.replace('..', '.').replace('..', '.').replace('..', '.').replace('1. ', '') \
                 .replace('. 2. ', '. ').replace('. 3. ', '. ').replace('. 4. ', '. ').replace('. 5. ', '. ') \
@@ -45,7 +45,7 @@ class FieldParser:
         return report
 
     def parse(self, features):
-        """解析单个样本的特征"""
+        """Parse features of a single sample"""
         to_return = {'id': features['id']}
         report = features.get("report", "")
         report = self.clean_report(report)
@@ -61,14 +61,14 @@ class FieldParser:
                     image = self._parse_image(array)
                     images.append(image)
             except Exception as e:
-                print(f"加载图像 {full_path} 时出错: {e}")
+                print(f"Error loading image {full_path}: {e}")
                 default_image = np.zeros((224, 224, 3), dtype=np.uint8)
                 image = self._parse_image(default_image)
                 images.append(image)
-        # 只返回第一张图像
+        # Only return the first image
         to_return["image"] = images[0] if images else None
         if to_return["image"] is None:
-            print(f"警告: 样本 {features['id']} 没有图像")
+            print(f"Warning: No image for sample {features['id']}")
             default_image = np.zeros((224, 224, 3), dtype=np.uint8)
             to_return["image"] = self._parse_image(default_image)
         return to_return
@@ -87,7 +87,7 @@ class ParseDataset(data.Dataset):
         return len(self.meta)
 
     def __getitem__(self, index):
-        """获取单个样本并添加调试信息"""
+        """Get a single sample and add debug information"""
         features = self.meta[index]
         parsed_data = self.parser.transform_with_parse(features)
         
@@ -99,17 +99,17 @@ class ParseDataset(data.Dataset):
             target_text = report
             ref = report
         elif self.args.task == 'classification':
-            target_text = ', '.join(labels) + '.' if labels else '未检测到疾病。'
+            target_text = ', '.join(labels) + '.' if labels else 'No diseases detected.'
             ref = labels
         
         image = parsed_data["image"]
         if image is None:
-            print(f"警告: 样本 {features['id']} 没有图像")
+            print(f"Warning: No image for sample {features['id']}")
             default_image = np.zeros((224, 224, 3), dtype=np.uint8)
             image = self.parser._parse_image(default_image)
         
-        # 调试：打印样本信息
-        print(f"样本 {parsed_data['id']}: 图像形状={image.shape}, 参考标签={ref}")
+        # Debug: Print sample information
+        print(f"Sample {parsed_data['id']}: image shape={image.shape}, ref={ref}")
         
         return {
             'id': parsed_data['id'],
@@ -119,7 +119,7 @@ class ParseDataset(data.Dataset):
         }
 
 def create_datasets(args):
-    """创建训练、验证和测试数据集"""
+    """Create train, validation, and test datasets"""
     train_dataset = ParseDataset(args, 'train')
     dev_dataset = ParseDataset(args, 'val')
     test_dataset = ParseDataset(args, 'test')

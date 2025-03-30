@@ -3,18 +3,18 @@ from torch.utils.data import DataLoader
 import torch
 
 def custom_collate_fn(batch):
-    """自定义批处理函数，堆叠数据并添加调试信息"""
+    """Custom collate function to stack data and add debug information"""
     ids = [item['id'] for item in batch]
     images = [item['image'] for item in batch]
     target_texts = [item['target_text'] for item in batch]
     refs = [item['ref'] for item in batch]
     
-    # 堆叠图像为张量
-    images = torch.stack(images)  # 例如 (batch_size, 3, 224, 224)
+    # Stack images into a tensor
+    images = torch.stack(images)  # e.g., (batch_size, 3, 224, 224)
     
-    # 调试：打印批次信息
-    print(f"批次图像形状: {images.shape}")
-    print(f"批次参考标签: {refs}")
+    # Debug: Print batch information
+    print(f"Batch image shape: {images.shape}")
+    print(f"Batch refs: {refs}")
     
     return {
         'id': ids,

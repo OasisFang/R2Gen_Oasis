@@ -10,7 +10,8 @@ from evalcap.cider.cider import Cider
 from transformers import SwinModel
 from lightning_tools.optim import config_optimizer
 from peft import get_peft_model, LoraConfig, TaskType
-import pdb
+from sklearn.metrics import precision_recall_fscore_support
+import torchvision.utils  # 用于保存图像
 
 class R2GenGPT(pl.LightningModule):
     def __init__(self, args):
@@ -18,7 +19,8 @@ class R2GenGPT(pl.LightningModule):
         self.args = args
         self.save_hyperparameters(args)
         
-        print(f'加载视觉编码器: {args.vision_model}')
+        # 加载视觉编码器
+        print(f'Loading vision encoder: {args.vision_model}')
         self.visual_encoder = SwinModel.from_pretrained(args.vision_model)
         if args.vis_use_lora:
             peft_config_visual = LoraConfig(
@@ -31,15 +33,16 @@ class R2GenGPT(pl.LightningModule):
             )
             self.visual_encoder = get_peft_model(self.visual_encoder, peft_config_visual)
             self.visual_encoder.print_trainable_parameters()
-            print('加载带 LoRA 的视觉编码器 -- 完成')
+            print('Loaded vision encoder with LoRA -- Done')
         elif args.freeze_vm:
             for name, param in self.visual_encoder.named_parameters():
                 param.requires_grad = False
-            print(f'加载冻结的视觉编码器: {args.vision_model} -- 完成')
+            print(f'Loaded frozen vision encoder: {args.vision_model} -- Done')
         else:
-            print(f'加载可训练的视觉编码器: {args.vision_model} -- 完成')
+            print(f'Loaded trainable vision encoder: {args.vision_model} -- Done')
         
-        print('加载 LLAMA 模型')
+        # 加载 LLaMA 模型
+        print('Loading LLAMA model')
         self.llama_tokenizer = LlamaTokenizer.from_pretrained(args.llama_model, use_fast=False)
         self.llama_tokenizer.pad_token_id = 0
         if args.low_resource:
@@ -62,88 +65,80 @@ class R2GenGPT(pl.LightningModule):
             )
             self.llama_model = get_peft_model(self.llama_model, peft_config)
             self.llama_model.print_trainable_parameters()
-            print('加载带 LoRA 的 LLAMA 模型 -- 完成')
+            print('Loaded LLAMA model with LoRA -- Done')
         else:
             self.embed_tokens = self.llama_model.get_input_embeddings()
             for name, param in self.llama_model.named_parameters():
                 param.requires_grad = False
-            print('加载 LLAMA 模型 -- 完成')
+            print('Loaded LLAMA model -- Done')
         
         self.llama_proj = nn.Linear(self.visual_encoder.num_features, self.llama_model.config.hidden_size)
         self.layer_norm = nn.LayerNorm(self.llama_model.config.hidden_size)
         self.end_sym = args.end_sym
-        self.prompt = '从 MIMIC-CXR 数据集的 14 种疾病中识别此胸部 X 射线图像中存在的所有疾病。'
+        
+        # 根据任务选择提示词
+        if args.task == 'classification':
+            self.prompt = 'List the diseases present in this chest X-ray image from the following: Atelectasis, Cardiomegaly, Consolidation, Edema, Effusion, Emphysema, Fibrosis, Hernia, Infiltration, Mass, Nodule, Pleural_Thickening, Pneumonia, Pneumothorax. Use comma-separated labels only.'
+        else:
+            self.prompt = 'Generate a comprehensive and detailed diagnosis report for this chest xray image.'
+        
         self.val_step_outputs = []
         self.test_step_outputs = []
         self.val_score = 0.0
         
+        # 加载检查点（如果提供）
         if args.delta_file is not None:
             state_dict = torch.load(args.delta_file, map_location=torch.device(f'cuda:{torch.cuda.current_device()}'))['model']
             self.load_state_dict(state_dict=state_dict, strict=False)
-            print(f'从 {args.delta_file} 加载检查点')
+            print(f'Loaded checkpoint from {args.delta_file}')
 
     def score(self, ref, hypo):
-        scorers = [
-            (Bleu(4), ["Bleu_1", "Bleu_2", "Bleu_3", "Bleu_4"]),
-            (Rouge(), "ROUGE_L"),
-            (Cider(), "CIDEr")
-        ]
-        final_scores = {}
-        for scorer, method in scorers:
-            score, scores = scorer.compute_score(ref, hypo)
-            if type(score) == list:
-                for m, s in zip(method, score):
-                    final_scores[m] = s
-            else:
-                final_scores[method] = score
-        return final_scores
-    
+        """计算评估指标"""
+        if self.hparams.task == 'report':
+            scorers = [
+                (Bleu(4), ["Bleu_1", "Bleu_2", "Bleu_3", "Bleu_4"]),
+                (Rouge(), "ROUGE_L"),
+                (Cider(), "CIDEr")
+            ]
+            final_scores = {}
+            for scorer, method in scorers:
+                score, scores = scorer.compute_score(ref, hypo)
+                if type(score) == list:
+                    for m, s in zip(method, score):
+                        final_scores[m] = s
+                else:
+                    final_scores[method] = score
+            return final_scores
+        elif self.hparams.task == 'classification':
+            disease_list = ['Atelectasis', 'Cardiomegaly', 'Consolidation', 'Edema', 'Effusion', 'Emphysema', 'Fibrosis', 'Hernia', 'Infiltration', 'Mass', 'Nodule', 'Pleural_Thickening', 'Pneumonia', 'Pneumothorax']
+            all_true = [self._parse_labels(r[0]) for r in ref.values()]
+            all_predicted = [self._parse_labels(h[0]) for h in hypo.values()]
+            true_vectors = [[1 if d in true else 0 for d in disease_list] for true in all_true]
+            pred_vectors = [[1 if d in pred else 0 for d in disease_list] for pred in all_predicted]
+            precision, recall, f1, _ = precision_recall_fscore_support(true_vectors, pred_vectors, average='micro', zero_division=0)
+            return {'Precision': precision, 'Recall': recall, 'F1': f1}
+
+    def _parse_labels(self, text):
+        """解析疾病标签"""
+        text = text.strip('.').replace('No diseases detected', '')
+        labels = [label.strip() for label in text.split(',') if label.strip()]
+        valid_labels = {"Atelectasis", "Cardiomegaly", "Consolidation", "Edema", "Effusion", "Emphysema", "Fibrosis", "Hernia", "Infiltration", "Mass", "Nodule", "Pleural_Thickening", "Pneumonia", "Pneumothorax"}
+        return [label for label in labels if label in valid_labels]
+
     def encode_img(self, images):
-        """
-        Encode a batch of images using the visual encoder and project the embeddings for LLaMA.
-
-        Args:
-            images (torch.Tensor): Input tensor of shape (batch_size, 3, 224, 224) containing the batch of images.
-
-        Returns:
-            tuple: (inputs_llama, atts_llama)
-                - inputs_llama (torch.Tensor): Projected image embeddings for LLaMA, shape (batch_size, seq_len, llama_hidden_size).
-                - atts_llama (torch.Tensor): Attention mask for LLaMA, shape (batch_size, seq_len).
-        """
-        device = images.device  # Get the device of the input tensor (e.g., 'cuda')
-
-        # Process the entire batch through the visual encoder
+        """编码图像"""
+        device = images.device  
         if self.hparams.global_only:
-            # Use pooler output for global features only, adding a sequence length dimension
-            image_embeds = self.visual_encoder(images)['pooler_output'].unsqueeze(1)  # Shape: (batch_size, 1, hidden_size)
+            image_embeds = self.visual_encoder(images)['pooler_output'].unsqueeze(1)
         else:
-            # Use last hidden state for full sequence features
-            image_embeds = self.visual_encoder(images)['last_hidden_state']  # Shape: (batch_size, seq_len, hidden_size)
-
-        # Project the image embeddings to match LLaMA's expected input dimension
-        inputs_llama = self.llama_proj(image_embeds)  # Shape: (batch_size, seq_len, llama_hidden_size)
-
-        # Create an attention mask with ones, matching the batch and sequence dimensions
-        atts_llama = torch.ones(inputs_llama.size()[:-1], dtype=torch.long).to(device)  # Shape: (batch_size, seq_len)
-
+            image_embeds = self.visual_encoder(images)['last_hidden_state']  
+        inputs_llama = self.llama_proj(image_embeds)  
+        atts_llama = torch.ones(inputs_llama.size()[:-1], dtype=torch.long).to(device)
         return inputs_llama, atts_llama
 
-    # def encode_img(self, images):
-    #     image_embeds = []
-    #     for image in images:
-    #         device = image.device
-    #         if self.hparams.global_only:
-    #             image_embed = self.visual_encoder(image)['pooler_output'].unsqueeze(1).to(device)
-    #         else:
-    #             image_embed = self.visual_encoder(image)['last_hidden_state'].to(device)
-    #         image_embeds.append(image_embed)
-    #     image_embeds = torch.stack(image_embeds).mean(0)
-    #     inputs_llama = self.llama_proj(image_embeds)
-    #     atts_llama = torch.ones(inputs_llama.size()[:-1], dtype=torch.long).to(image.device)
-    #     return inputs_llama, atts_llama
-
     def prompt_wrap(self, img_embeds, atts_img):
-        prompt = f'人类: <Img><ImageHere></Img> {self.prompt} \n助手:'
+        """将图像嵌入与提示词结合"""
+        prompt = f'Human: <Img><ImageHere></Img> {self.prompt} \nAssistant:'
         batch_size = img_embeds.shape[0]
         p_before, p_after = prompt.split('<ImageHere>')
         p_before_tokens = self.llama_tokenizer(p_before, return_tensors="pt", add_special_tokens=False).to(img_embeds.device)
@@ -155,6 +150,7 @@ class R2GenGPT(pl.LightningModule):
         return wrapped_img_embeds, wrapped_atts_img
 
     def forward(self, samples):
+        """前向传播"""
         image = samples["image"]
         img_embeds, atts_img = self.encode_img(image)
         img_embeds = self.layer_norm(img_embeds)
@@ -203,11 +199,13 @@ class R2GenGPT(pl.LightningModule):
         return {"loss": loss}
 
     def training_step(self, batch, batch_idx):
+        """训练步骤"""
         result = self(batch)
         self.log_dict(result, prog_bar=True)
         return result
 
     def save_checkpoint(self, eval_res):
+        """保存检查点"""
         current_epoch, global_step = self.trainer.current_epoch, self.trainer.global_step
         param_grad_dic = {
             k: v.requires_grad for (k, v) in self.named_parameters() if v.requires_grad
@@ -223,14 +221,21 @@ class R2GenGPT(pl.LightningModule):
             "step": global_step
         }
         os.makedirs(os.path.join(self.hparams.savedmodel_path, 'checkpoints'), exist_ok=True)
-        save_to = os.path.join(
-            self.hparams.savedmodel_path, 'checkpoints',
-            "检查点_epoch{}_step{}_bleu{:3f}_cider{:3f}.pth".format(current_epoch, global_step, eval_res['Bleu_4'], eval_res['CIDEr']),
-        )
-        self.print("在步骤 {} 保存检查点至 {}".format(global_step, save_to))
+        if self.hparams.task == 'report':
+            save_to = os.path.join(
+                self.hparams.savedmodel_path, 'checkpoints',
+                "checkpoint_epoch{}_step{}_bleu{:.3f}_cider{:.3f}.pth".format(current_epoch, global_step, eval_res['Bleu_4'], eval_res['CIDEr'])
+            )
+        else:
+            save_to = os.path.join(
+                self.hparams.savedmodel_path, 'checkpoints',
+                "checkpoint_epoch{}_step{}_f1{:.3f}.pth".format(current_epoch, global_step, eval_res['F1'])
+            )
+        self.print("Saving checkpoint at step {} to {}".format(global_step, save_to))
         torch.save(save_obj, save_to)
 
     def validation_step(self, samples, batch_idx):
+        """验证步骤"""
         self.llama_tokenizer.padding_side = "right"
         to_regress_tokens = self.llama_tokenizer(
             samples['target_text'],
@@ -272,6 +277,7 @@ class R2GenGPT(pl.LightningModule):
         return hypo, ref
 
     def decode(self, output_token):
+        """解码输出"""
         if output_token[0] == 0:
             output_token = output_token[1:]
         if output_token[0] == 1:
@@ -279,9 +285,14 @@ class R2GenGPT(pl.LightningModule):
         output_text = self.llama_tokenizer.decode(output_token, add_special_tokens=False)
         output_text = output_text.split('</s>')[0].strip()
         output_text = output_text.replace('<unk>', '')
+        if self.hparams.task == 'classification':
+            valid_labels = {"Atelectasis", "Cardiomegaly", "Consolidation", "Edema", "Effusion", "Emphysema", "Fibrosis", "Hernia", "Infiltration", "Mass", "Nodule", "Pleural_Thickening", "Pneumonia", "Pneumothorax"}
+            labels = [word.strip() for word in output_text.split(',') if word.strip() in valid_labels]
+            return ', '.join(labels) if labels else 'No diseases detected'
         return output_text
 
     def on_validation_epoch_end(self):
+        """验证结束"""
         ref, hypo, ids = [], [], []
         for i in self.val_step_outputs:
             ref.extend(i['ref'])
@@ -295,13 +306,16 @@ class R2GenGPT(pl.LightningModule):
         result_folder = os.path.join(self.hparams.savedmodel_path, 'result')
         os.makedirs(result_folder, exist_ok=True)
         current_epoch, global_step = self.trainer.current_epoch, self.trainer.global_step
-        json.dump(hypo, open(os.path.join(result_folder, f"结果_{current_epoch}_{global_step}.json"), 'w'))
-        json.dump(ref, open(os.path.join(result_folder, '参考.json'), 'w'))
+        json.dump(hypo, open(os.path.join(result_folder, f"result_{current_epoch}_{global_step}.json"), 'w'))
+        json.dump(ref, open(os.path.join(result_folder, 'refs.json'), 'w'))
         self.print(eval_res)
         
         val_score = 0
-        for score_type, weight in zip(self.hparams.scorer_types, self.hparams.weights):
-            val_score += eval_res[score_type] * weight
+        if self.hparams.task == 'report':
+            for score_type, weight in zip(self.hparams.scorer_types, self.hparams.weights):
+                val_score += eval_res[score_type] * weight
+        else:
+            val_score = eval_res['F1']
         
         if self.trainer.local_rank == 0:
             if val_score > self.val_score:
@@ -310,6 +324,7 @@ class R2GenGPT(pl.LightningModule):
         self.val_step_outputs.clear()
 
     def test_step(self, samples, batch_idx):
+        """测试步骤"""
         self.llama_tokenizer.padding_side = "right"
         to_regress_tokens = self.llama_tokenizer(
             samples['target_text'],
@@ -347,37 +362,60 @@ class R2GenGPT(pl.LightningModule):
         )
         hypo = [self.decode(i) for i in outputs]
         ref = [self.decode(i) for i in to_regress_tokens['input_ids']]
-        self.test_step_outputs.append({"hypo": hypo, "ref": ref, "id": samples["id"]})
+        # 将图像、hypo 和 ref 保存到 test_step_outputs
+        self.test_step_outputs.append({"hypo": hypo, "ref": ref, "id": samples["id"], "image": samples["image"]})
         return hypo, ref
 
     def on_test_epoch_end(self):
-        ref, hypo, ids = [], [], []
+        """测试结束"""
+        ref, hypo, ids, images = [], [], [], []
         for i in self.test_step_outputs:
             ref.extend(i['ref'])
             hypo.extend(i['hypo'])
             ids.extend(i['id'])
+            images.extend(i['image'])
         ref = {k: [v] for k, v in zip(ids, ref)}
         hypo = {k: [v] for k, v in zip(ids, hypo)}
         eval_res = self.score(ref=ref, hypo=hypo)
         self._save_test_results(hypo, ref, eval_res)
+        
+        # 保存图像和文本对比（最多10个样本）
+        if self.hparams.save_images:
+            result_folder = os.path.join(self.hparams.savedmodel_path, 'images')
+            os.makedirs(result_folder, exist_ok=True)
+            # 选择前10个样本
+            for idx, (image, r, h) in enumerate(zip(images[:10], ref.values()[:10], hypo.values()[:10])):
+                image_path = os.path.join(result_folder, f"image_{idx}.png")
+                # 假设 image 是 torch.Tensor，形状为 [C, H, W]
+                if image.max() > 1:
+                    image = image / 255.0  # 归一化到 [0, 1]
+                torchvision.utils.save_image(image, image_path)
+                with open(os.path.join(result_folder, f"text_{idx}.txt"), 'w') as f:
+                    f.write(f"Reference: {r[0]}\n")
+                    f.write(f"Generated: {h[0]}\n")
+        
         self.test_step_outputs.clear()
 
     def _save_test_results(self, hypo, ref, eval_res):
+        """保存测试结果"""
         result_folder = os.path.join(self.hparams.savedmodel_path, 'result')
         os.makedirs(result_folder, exist_ok=True)
-        json.dump(hypo, open(os.path.join(result_folder, "测试结果.json"), 'w'))
-        json.dump(ref, open(os.path.join(result_folder, '测试参考.json'), 'w'))
-        self.print(f"{self.hparams.delta_file} 的测试结果: {eval_res}")
+        json.dump(hypo, open(os.path.join(result_folder, "test_result.json"), 'w'))
+        json.dump(ref, open(os.path.join(result_folder, 'test_refs.json'), 'w'))
+        self.print(f"Test result of {self.hparams.delta_file}: {eval_res}")
 
     def configure_optimizers(self):
+        """配置优化器"""
         optimizer = torch.optim.AdamW(self.parameters(), lr=self.hparams.learning_rate)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=self.hparams.max_epochs, eta_min=1e-6)
         return {"optimizer": optimizer, "lr_scheduler": scheduler}
 
     def get_progress_bar_dict(self):
+        """获取进度条信息"""
         items = super().get_progress_bar_dict()
         items.pop("v_num", None)
         return items
 
     def optimizer_zero_grad(self, epoch, batch_idx, optimizer):
+        """优化器梯度清零"""
         optimizer.zero_grad()
