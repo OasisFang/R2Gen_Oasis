@@ -12,7 +12,7 @@ parser.add_argument('--test_batch_size', default=16, type=int, help="Batch size 
 parser.add_argument('--prefetch_factor', default=4, type=int, help="Prefetch factor per worker")
 parser.add_argument('--num_workers', default=8, type=int, help="Number of CPU cores for data loaders")
 parser.add_argument('--image_save_path', type=str, default=r'/root/autodl-tmp/save', help="Path to save images during testing")
-parser.add_argument('--save_images', action='store_true', help="Comparetion of images")
+parser.add_argument('--save_images', action='store_true', help="Save images and text comparisons during validation for each epoch")
 parser.add_argument('--vision_model', default='microsoft/swin-base-patch4-window7-224', type=str, help="Vision model to use")
 parser.add_argument('--llama_model', default='meta-llama/Llama-2-7b-chat-hf', type=str, help="Language model to use")
 parser.add_argument('--freeze_vm', default=True, type=lambda x: (str(x).lower() == 'true'), help='Freeze the vision model')

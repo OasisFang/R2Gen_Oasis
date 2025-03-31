@@ -45,28 +45,19 @@ def train(args):
     else:
         model = R2GenGPT(args)
     
-
+    # Train or test model
     if args.test:
         print("正在运行测试模式...")
+        trainer.test(model, datamodule=dm)
+    elif args.validate:
+        print("正在运行验证模式...")
+        trainer.validate(model, datamodule=dm)
+    else:
+        print("正在运行训练模式...")
+        trainer.fit(model, datamodule=dm)
 
-    if args.save_images:
-        print("正在保存图像...")
-        # 示例保存逻辑（根据实际需求替换）
-        save_path = "/root/autodl-tmp/save/mimic_cxr/v5_test"
-        import os
-        os.makedirs(save_path, exist_ok=True)
-        with open(os.path.join(save_path, "example_image.txt"), "w") as f:
-            f.write("这是一个示例图像保存文件\n")
-
-    # 其他训练或测试逻辑
-    print(f"批量大小: {args.batch_size}")
-    print(f"训练轮数: {args.epochs}")
-        
 def main():
     args = parser.parse_args()
-    # 添加 save_images 参数到 args
-    if not hasattr(args, 'save_images'):
-        args.save_images = False
     os.makedirs(args.savedmodel_path, exist_ok=True)
     pprint(vars(args))
     seed_everything(42, workers=True)

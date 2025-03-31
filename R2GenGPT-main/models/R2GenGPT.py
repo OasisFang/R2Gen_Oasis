@@ -273,7 +273,7 @@ class R2GenGPT(pl.LightningModule):
         )
         hypo = [self.decode(i) for i in outputs]
         ref = [self.decode(i) for i in to_regress_tokens['input_ids']]
-        self.val_step_outputs.append({"hypo": hypo, "ref": ref, "id": samples["id"]})
+        self.val_step_outputs.append({"hypo": hypo, "ref": ref, "id": samples["id"], "image": samples["image"]})
         return hypo, ref
 
     def decode(self, output_token):
@@ -293,15 +293,23 @@ class R2GenGPT(pl.LightningModule):
 
     def on_validation_epoch_end(self):
         """验证结束"""
-        ref, hypo, ids = [], [], []
+        ref, hypo, ids, images = [], [], [], []
         for i in self.val_step_outputs:
             ref.extend(i['ref'])
             hypo.extend(i['hypo'])
             ids.extend(i['id'])
+            images.extend(i['image'])
         ref = {k: [v] for k, v in zip(ids, ref)}
         hypo = {k: [v] for k, v in zip(ids, hypo)}
         eval_res = self.score(ref=ref, hypo=hypo)
         self.log_dict(eval_res, sync_dist=True, logger=True)
+        
+        # 显示 Precision, Recall, F1
+        if self.hparams.task == 'classification':
+            precision = eval_res['Precision']
+            recall = eval_res['Recall']
+            f1 = eval_res['F1']
+            self.print(f"Epoch {self.trainer.current_epoch} - Validation Precision: {precision:.4f}, Recall: {recall:.4f}, F1: {f1:.4f}")
         
         result_folder = os.path.join(self.hparams.savedmodel_path, 'result')
         os.makedirs(result_folder, exist_ok=True)
@@ -321,6 +329,20 @@ class R2GenGPT(pl.LightningModule):
             if val_score > self.val_score:
                 self.save_checkpoint(eval_res)
                 self.val_score = val_score
+        
+        # 保存图像和文本对比（每个 epoch 保存 10 个样本）
+        if self.hparams.save_images:
+            image_folder = os.path.join(self.hparams.savedmodel_path, 'images', f'epoch_{current_epoch}')
+            os.makedirs(image_folder, exist_ok=True)
+            for idx, (image, r, h) in enumerate(zip(images[:10], ref.values()[:10], hypo.values()[:10])):
+                image_path = os.path.join(image_folder, f"image_{idx}.png")
+                if image.max() > 1:
+                    image = image / 255.0  # 归一化到 [0, 1]
+                torchvision.utils.save_image(image, image_path)
+                with open(os.path.join(image_folder, f"text_{idx}.txt"), 'w') as f:
+                    f.write(f"Reference: {r[0]}\n")
+                    f.write(f"Generated: {h[0]}\n")
+        
         self.val_step_outputs.clear()
 
     def test_step(self, samples, batch_idx):
@@ -362,14 +384,13 @@ class R2GenGPT(pl.LightningModule):
         )
         hypo = [self.decode(i) for i in outputs]
         ref = [self.decode(i) for i in to_regress_tokens['input_ids']]
-        # 将图像、hypo 和 ref 保存到 test_step_outputs
         self.test_step_outputs.append({"hypo": hypo, "ref": ref, "id": samples["id"], "image": samples["image"]})
         return hypo, ref
 
-    def on_test_epoch_end(self):
-        """测试结束"""
+    def on_validation_epoch_end(self):
+        """验证结束"""
         ref, hypo, ids, images = [], [], [], []
-        for i in self.test_step_outputs:
+        for i in self.val_step_outputs:
             ref.extend(i['ref'])
             hypo.extend(i['hypo'])
             ids.extend(i['id'])
@@ -377,24 +398,75 @@ class R2GenGPT(pl.LightningModule):
         ref = {k: [v] for k, v in zip(ids, ref)}
         hypo = {k: [v] for k, v in zip(ids, hypo)}
         eval_res = self.score(ref=ref, hypo=hypo)
-        self._save_test_results(hypo, ref, eval_res)
-        
-        # 保存图像和文本对比（最多10个样本）
+        self.log_dict(eval_res, sync_dist=True, logger=True)
+
+        # 显示 Precision, Recall, F1
+        if self.hparams.task == 'classification':
+            precision = eval_res['Precision']
+            recall = eval_res['Recall']
+            f1 = eval_res['F1']
+            self.print(f"Epoch {self.trainer.current_epoch} - Validation Precision: {precision:.4f}, Recall: {recall:.4f}, F1: {f1:.4f}")
+
+        result_folder = os.path.join(self.hparams.savedmodel_path, 'result')
+        os.makedirs(result_folder, exist_ok=True)
+        current_epoch, global_step = self.trainer.current_epoch, self.trainer.global_step
+        json.dump(hypo, open(os.path.join(result_folder, f"result_{current_epoch}_{global_step}.json"), 'w'))
+        json.dump(ref, open(os.path.join(result_folder, 'refs.json'), 'w'))
+        self.print(eval_res)
+
+        val_score = 0
+        if self.hparams.task == 'report':
+            for score_type, weight in zip(self.hparams.scorer_types, self.hparams.weights):
+                val_score += eval_res[score_type] * weight
+        else:
+            val_score = eval_res['F1']
+
+        if self.trainer.local_rank == 0:
+            if val_score > self.val_score:
+                self.save_checkpoint(eval_res)
+                self.val_score = val_score
+
+        # 保存图像和文本对比（每个 epoch 保存 10 个样本）
         if self.hparams.save_images:
-            result_folder = os.path.join(self.hparams.savedmodel_path, 'images')
-            os.makedirs(result_folder, exist_ok=True)
-            # 选择前10个样本
-            for idx, (image, r, h) in enumerate(zip(images[:10], ref.values()[:10], hypo.values()[:10])):
-                image_path = os.path.join(result_folder, f"image_{idx}.png")
-                # 假设 image 是 torch.Tensor，形状为 [C, H, W]
+            image_folder = os.path.join(self.hparams.savedmodel_path, 'images', f'epoch_{current_epoch}')
+            os.makedirs(image_folder, exist_ok=True)
+            for idx, (image, r, h) in enumerate(zip(images[:10], list(ref.values())[:10], list(hypo.values())[:10])):
+                image_path = os.path.join(image_folder, f"image_{idx}.png")
                 if image.max() > 1:
                     image = image / 255.0  # 归一化到 [0, 1]
                 torchvision.utils.save_image(image, image_path)
-                with open(os.path.join(result_folder, f"text_{idx}.txt"), 'w') as f:
+                with open(os.path.join(image_folder, f"text_{idx}.txt"), 'w') as f:
                     f.write(f"Reference: {r[0]}\n")
                     f.write(f"Generated: {h[0]}\n")
+
+        self.val_step_outputs.clear()
+    
+#     def on_test_epoch_end(self):
+#         """测试结束"""
+#         ref, hypo, ids, images = [], [], [], []
+#         for i in self.test_step_outputs:
+#             ref.extend(i['ref'])
+#             hypo.extend(i['hypo'])
+#             ids.extend(i['id'])
+#             images.extend(i['image'])
+#         ref = {k: [v] for k, v in zip(ids, ref)}
+#         hypo = {k: [v] for k, v in zip(ids, hypo)}
+#         eval_res = self.score(ref=ref, hypo=hypo)
+#         self._save_test_results(hypo, ref, eval_res)
         
-        self.test_step_outputs.clear()
+#         if self.hparams.save_images:
+#             result_folder = os.path.join(self.hparams.savedmodel_path, 'images')
+#             os.makedirs(result_folder, exist_ok=True)
+#             for idx, (image, r, h) in enumerate(zip(images[:10], ref.values()[:10], hypo.values()[:10])):
+#                 image_path = os.path.join(result_folder, f"image_{idx}.png")
+#                 if image.max() > 1:
+#                     image = image / 255.0
+#                 torchvision.utils.save_image(image, image_path)
+#                 with open(os.path.join(result_folder, f"text_{idx}.txt"), 'w') as f:
+#                     f.write(f"Reference: {r[0]}\n")
+#                     f.write(f"Generated: {h[0]}\n")
+        
+#         self.test_step_outputs.clear()
 
     def _save_test_results(self, hypo, ref, eval_res):
         """保存测试结果"""
