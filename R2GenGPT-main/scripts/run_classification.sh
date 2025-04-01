@@ -1,11 +1,12 @@
 #!/bin/bash
 
 dataset="mimic_cxr"
-annotation="/root/autodl-tmp/mimic_cxr_mini/p10_annotation_final.json"
+annotation="/root/autodl-tmp/mimic_cxr_mini/p10_annotation_classification_final.json"
 base_dir="/root/autodl-tmp/mimic_cxr_mini/images"
 
-version="classification_v10_save_image"
-savepath="/root/autodl-tmp/save/$dataset/$version"
+version="classification_v4"
+savepath="/root/autodl-tmp/save/$version"
+delta_file="/root/autodl-tmp/save/classification_v3/checkpoints/checkpoint_epoch2_step7284_f10.222.pth"
 
 # Ensure the folder exists
 if [ ! -d "$savepath" ]; then
@@ -20,6 +21,7 @@ python -u train.py \
     --annotation ${annotation} \
     --base_dir ${base_dir} \
     --batch_size 10 \
+    --delta_file ${delta_file} \
     --val_batch_size 10 \
     --freeze_vm True \
     --vis_use_lora True \

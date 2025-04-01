@@ -5,10 +5,11 @@ import numpy as np
 # 文件路径
 csv_file_path = "/root/autodl-tmp/mimic-cxr-2.0.0-chexpert.csv"
 json_file_path = "/root/autodl-tmp/mimic_cxr_mini/p10_annotation.json"
-updated_json_path = "/root/autodl-tmp/mimic_cxr_mini/p10_annotation_final.json"
+updated_json_path = "/root/autodl-tmp/mimic_cxr_mini/p10_annotation_classification_final.json"
 
-# 读取 CSV 文件，并将 NaN 替换为 None（对应 JSON 中的 null）
-csv_data = pd.read_csv(csv_file_path).replace({np.nan: None})
+# 读取 CSV 文件，并将 NaN 和 -1.0 替换为 None
+csv_data = pd.read_csv(csv_file_path)
+csv_data.replace({np.nan: None, -1.0: None}, inplace=True)
 
 # 读取 JSON 文件
 with open(json_file_path, "r") as json_file:
@@ -23,9 +24,13 @@ for split in ["train", "val", "test"]:
     for entry in json_data[split]:
         key = (entry["subject_id"], entry["study_id"])
         if key in study_label_map:
-            entry["labels"] = study_label_map[key]  # 添加所有疾病标签
+            labels = study_label_map[key]
+            # 检查所有标签是否都是 None
+            if all(value is None for value in labels.values()):
+                labels["No Finding"] = 1.0
+            entry["labels"] = labels
         else:
-            entry["labels"] = {}  # 若未找到匹配项，填充为空字典
+            entry["labels"] = {} 
 
 # 保存更新后的 JSON 文件，并确保 NaN 变为 null
 with open(updated_json_path, "w", encoding="utf-8") as updated_json_file:

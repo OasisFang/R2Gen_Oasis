@@ -78,7 +78,7 @@ class R2GenGPT(pl.LightningModule):
         
         # 根据任务选择提示词
         if args.task == 'classification':
-            self.prompt = 'This is a 14-class classification task related to medical imaging, where the 14 disease categories are as follows: Atelectasis,Cardiomegaly,Consolidation,Edema,Enlarged Cardiomediastinum,Fracture,Lung Lesion,Lung Opacity,No Finding,Pleural Effusion,Pleural Other,Pneumonia,Pneumothorax,Support Devices. Please output \"Positive\" or \"Negative\" for each category.'
+            self.prompt = 'This is a 14-class classification task related to medical imaging, where the 14 disease categories are as follows: Atelectasis,Cardiomegaly,Consolidation,Edema,Enlarged Cardiomediastinum,Fracture,Lung Lesion,Lung Opacity,No Finding,Pleural Effusion,Pleural Other,Pneumonia,Pneumothorax,Support Devices. Please identify the dieases with the name'
         else:
             self.prompt = 'Generate a comprehensive and detailed diagnosis report for this chest xray image.'
         
@@ -110,7 +110,9 @@ class R2GenGPT(pl.LightningModule):
                     final_scores[method] = score
             return final_scores
         elif self.hparams.task == 'classification':
-            disease_list = ['Atelectasis', 'Cardiomegaly', 'Consolidation', 'Edema', 'Effusion', 'Emphysema', 'Fibrosis', 'Hernia', 'Infiltration', 'Mass', 'Nodule', 'Pleural_Thickening', 'Pneumonia', 'Pneumothorax']
+            disease_list = ['Atelectasis", "Cardiomegaly', 'Consolidation', 'Edema', 'Enlarged Cardiomediastinum',
+                            'Fracture', 'Lung Lesion', 'Lung Opacity', 'Pleural Effusion', 'Pleural Other',
+                            'Pneumonia', 'Pneumothorax', 'Support Devices', 'No Finding']
             all_true = [self._parse_labels(r[0]) for r in ref.values()]
             all_predicted = [self._parse_labels(h[0]) for h in hypo.values()]
             true_vectors = [[1 if d in true else 0 for d in disease_list] for true in all_true]
@@ -122,7 +124,11 @@ class R2GenGPT(pl.LightningModule):
         """解析疾病标签"""
         text = text.strip('.').replace('No diseases detected', '')
         labels = [label.strip() for label in text.split(',') if label.strip()]
-        valid_labels = {"Atelectasis", "Cardiomegaly", "Consolidation", "Edema", "Effusion", "Emphysema", "Fibrosis", "Hernia", "Infiltration", "Mass", "Nodule", "Pleural_Thickening", "Pneumonia", "Pneumothorax"}
+        valid_labels = {
+                        "Atelectasis", "Cardiomegaly", "Consolidation", "Edema", "Enlarged Cardiomediastinum",
+                        "Fracture", "Lung Lesion", "Lung Opacity", "No Finding", "Pleural Effusion",
+                        "Pleural Other", "Pneumonia", "Pneumothorax", "Support Devices"
+                        }
         return [label for label in labels if label in valid_labels]
 
     def encode_img(self, images):
@@ -301,9 +307,14 @@ class R2GenGPT(pl.LightningModule):
         output_text = output_text.split('</s>')[0].strip()
         output_text = output_text.replace('<unk>', '')
         if self.hparams.task == 'classification':
-            valid_labels = {"Atelectasis", "Cardiomegaly", "Consolidation", "Edema", "Effusion", "Emphysema", "Fibrosis", "Hernia", "Infiltration", "Mass", "Nodule", "Pleural_Thickening", "Pneumonia", "Pneumothorax"}
+            valid_labels = {
+                                "Atelectasis", "Cardiomegaly", "Consolidation", "Edema", "Enlarged Cardiomediastinum",
+                                "Fracture", "Lung Lesion", "Lung Opacity", "No Finding", "Pleural Effusion",
+                                "Pleural Other", "Pneumonia", "Pneumothorax", "Support Devices"
+                            }
+
             labels = [word.strip() for word in output_text.split(',') if word.strip() in valid_labels]
-            return ', '.join(labels) if labels else 'No diseases detected'
+            return ', '.join(labels) if labels else 'No finding'
         return output_text
 
     def on_validation_epoch_end(self):
