@@ -1,30 +1,32 @@
+from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
+from lightning.pytorch.loggers import TensorBoardLogger  # Import TensorBoardLogger
 import os
-from lightning.pytorch.loggers import CSVLogger
-from lightning.pytorch import loggers as pl_loggers
-from lightning.pytorch.callbacks import LearningRateMonitor
-from lightning.pytorch.callbacks import ModelCheckpoint
-
 
 def add_callbacks(args):
-    log_dir = args.savedmodel_path
-    os.makedirs(log_dir, exist_ok=True)
-
-    # --------- Add Callbacks
+    """Add callbacks and loggers for training."""
+    # Define callbacks
     checkpoint_callback = ModelCheckpoint(
-        dirpath=os.path.join(log_dir, "checkpoints"),
-        filename="{epoch}-{step}",
-        save_top_k=-1,
-        every_n_train_steps=args.every_n_train_steps,
-        save_last=False,
-        save_weights_only=False
+        monitor='val/F1' if args.task == 'classification' else 'val/CIDEr',
+        dirpath=os.path.join(args.savedmodel_path, 'checkpoints'),
+        filename='checkpoint-{epoch:02d}-{val/F1:.4f}' if args.task == 'classification' else 'checkpoint-{epoch:02d}-{val/CIDEr:.4f}',
+        save_top_k=1,
+        mode='max',
+    )
+    early_stop_callback = EarlyStopping(
+        monitor='val/F1' if args.task == 'classification' else 'val/CIDEr',
+        patience=3,
+        mode='max',
+    )
+    lr_monitor = LearningRateMonitor(logging_interval='step')  # Monitor learning rate per step
+    
+    # Define logger
+    logger = TensorBoardLogger(
+        save_dir=os.path.join(args.savedmodel_path, 'logs'),
+        name='training_logs'
     )
     
-    lr_monitor_callback = LearningRateMonitor(logging_interval='step')
-    tb_logger = pl_loggers.TensorBoardLogger(save_dir=os.path.join(log_dir, "logs"), name="tensorboard")
-    csv_logger = CSVLogger(save_dir=os.path.join(log_dir, "logs"), name="csvlog")
-
-    to_returns = {
-        "callbacks": [checkpoint_callback, lr_monitor_callback],
-        "loggers": [csv_logger, tb_logger]
+    # Return both callbacks and logger
+    return {
+        "callbacks": [checkpoint_callback, early_stop_callback, lr_monitor],
+        "loggers": logger
     }
-    return to_returns
